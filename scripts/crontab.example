@@ -1,0 +1,32 @@
+# Polymarket-sharps schedule (Debian Chromebook, always-on). Install with:
+#     crontab scripts/crontab.example
+# and remove with `crontab -r`. Inspect with `crontab -l`. All output goes to
+# data/cron.log (gitignored; rotated nightly by recompute.sh).
+#
+# Cadence rationale (see DECISIONS.md):
+#   - ingest every 5 min: the global /trades feed only serves the most recent
+#     ~10k platform-wide trades with no time filter, so polls must OVERLAP or
+#     trades fall in the gap permanently. One 10k poll spans ~5-10 min of feed.
+#     To hold that cadence, ingest only APPENDS its rows to a small delta parquet
+#     part (~1 min/tick) instead of rewriting the multi-million-row ledger, which
+#     took 5-8 min and made every other tick skip on the lock (DECISIONS.md
+#     "Fixes (2026-07-23)").
+#   - recompute nightly: fold-delta + backfill + features/validate/rank/report.
+#     features peaks ~3 GB RSS, so it runs once a night, off the ingest cadence's
+#     back. The fold is its first step, so every stage below reads a full ledger.
+#
+# Concurrency safety: ingest and backfill are ledger writers guarded by a shared
+# flock (data/interim/.ledger.lock). ingest uses -n and SKIPS a tick if the
+# nightly backfill holds the lock; backfill blocks until any in-flight ingest
+# finishes. So the two writers never run at once (writes are atomic anyway, so a
+# skip/kill costs a re-run, never corruption). The read-only pipeline stages run
+# unlocked. Absolute paths so cron's minimal environment resolves them.
+
+*/5 *  * * *  /home/agent47/polymarket-sharps/scripts/ingest.sh
+17  3  * * *  /home/agent47/polymarket-sharps/scripts/recompute.sh
+
+# --- Project 3 forward scoring (read-only) ---
+# Re-fetches each frozen cohort's post-freeze trades and scores whether the
+# cohort beats its frozen baseline on bets placed after the freeze. Public GETs
+# only. Every 2 days: sports resolves in hours-days, forecasters in weeks.
+# 37 5 */2 * *  /home/agent47/polymarket-sharps/scripts/forward_score.sh

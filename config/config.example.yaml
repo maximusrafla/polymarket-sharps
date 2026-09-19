@@ -1,0 +1,146 @@
+# copy to config.yaml (gitignored) and fill in / adjust
+data_source:
+  # Public, unauthenticated Polymarket REST APIs (no key needed). See DECISIONS.md
+  # for why these were chosen over the Goldsky subgraph or raw Polygon RPC.
+  trades_api_base: "https://data-api.polymarket.com"
+  clob_api_base: "https://clob.polymarket.com"
+
+ingest:
+  # The global /trades feed has no working server-side time filter (verified:
+  # `after`/`before` are silently ignored) AND hard-caps offset+limit at 10,000
+  # (verified: offset=10500 -> 400 "max historical trades offset of 10000
+  # exceeded"). So each run can only ever see the most recent ~10k trades
+  # platform-wide — there is no way to deep-backfill history through this
+  # endpoint. This makes ingest a rolling-window poller: run it often enough
+  # (see README/SETUP cron guidance) that consecutive polls overlap and no
+  # trades fall in the gap. The compact bet ledger
+  # (data/interim/bet_ledger.parquet) accumulates every resolved bet forever
+  # across runs; only the bulky raw payload cache rolls off (raw_batches_to_keep).
+  # See DECISIONS.md.
+  backfill_lookback_days: 3 # soft floor; the 10k offset cap is hit first in practice
+  page_size: 500 # rows per /trades page
+  max_pages_per_run: 20 # 20 * 500 = 10,000 = the API's hard offset ceiling
+  request_timeout_sec: 20
+  max_retries: 4
+  retry_backoff_sec: 1.5
+  raw_batches_to_keep: 3 # rolling window of raw trade batches kept on disk
+  resolution_recheck: true # re-check unresolved markets seen this run
+  max_resolution_fetches_per_run: 500 # cap resolution GETs per ingest so it stays inside the ~5-min cron cadence. update_resolutions rechecks EVERY open market each run; the backfill leaves a large, growing tail of genuinely-open real-world markets (6k+), and rechecking all at ~20 req/s pushed ingest to ~9 min (breaking the poll cadence). Fresh (unseen) markets are always resolved first; the recheck backlog drains across the frequent runs + the nightly backfill (cap 2000). Null = uncapped.
+  delta_fold_rows_per_pass: 300000 # rows of pending delta held in memory per fold pass (`src.ingest --fold-delta`, nightly). Ingest appends new rows to small delta parts instead of rewriting the whole ledger (which took 5-8 min on the VM and broke the 5-min poll cadence). A day of parts can be ~1M rows; each fold pass streams the ledger past one group of at most this many rows, so this — not the number of pending parts — bounds peak RSS on the 1 GB host. Extra passes only cost another ledger rewrite (~27 s at 4.7M rows).
+  delta_warn_rows: 5000000 # warn from ingest if this many delta rows are pending unfolded (i.e. the nightly fold has stopped running). Null/0 disables.
+  resolution_fetch_workers: 5 # concurrent resolution GETs. CLOB rate-limits aggregate throughput to ~20-22 req/s regardless of concurrency (verified: workers 3/4/6 all ~20/s; 12+ just adds 429 noise). 5 = polite, near-optimal, retry-backed. ~2.5x serial. Set 1 for serial.
+
+scoring:
+  min_sample_size: 30 # bets required before a wallet is trusted (down-weights below this)
+  oos_split: 0.5 # first-half select / second-half validate
+  copy_window_hours: 24 # forward window used to estimate "fair value" after entry
+  earliness_window_hours: 6 # shorter forward window used for the earliness/price-drift signal
+  fair_value_resolution_guard: 0.2 # drop trades in the final 20% of a token's observed lifespan when proxying fair value, so near-resolution prices don't leak the outcome into copy_window/earliness (see DECISIONS.md)
+  time_consistency_buckets: 4 # chronological buckets per wallet for time-consistency
+  manufactured_flag_counterparty_share: 0.4 # >=40% notional vs one counterparty
+  manufactured_flag_min_markets: 5 # ...across at least this many distinct markets
+  late_entry_percentile: 0.1 # bottom 10% of time-to-resolution flags "late concentrated entry"
+  # --- skill-edge validation (see HANDOFF.md red-team + DECISIONS.md) ---
+  price_baseline_bins: 20 # quantile bins for the favorite-longshot calibration curve subtracted to get residual (skill) edge
+  min_bets_per_half: 10 # resolved bets required in EACH oos half before persistence is tested (~matches min_sample_size=30 total; was implicitly 2)
+  oos_significance_alpha: 0.05 # one-sided t-test: held-out skill edge must be significantly > 0 to count as persisted
+  min_skill_edge: 0.02 # economic-magnitude floor (price units): held-out skill edge must ALSO clear this to count as persisted, independent of significance. On ~5000-bet samples the t-test certifies ~1c edges at p~1e-26 — statistically ironclad, economically meaningless. Floor is above 1c so those don't rank. Reported separately as edge_significant / edge_magnitude_ok; gates only the flag/score, never dataset membership. See HANDOFF.
+  min_oos_markets: 30 # cluster-count floor: distinct HELD-OUT markets required to certify persistence. Bets sharing a market share one resolution event, so effective sample size is markets, not bets — the persistence t-test over bets understates variance (measured median design effect 1.60, max 230; scripts/audit_persistence_cluster.py). A wallet that piled many bets into few markets can clear significance on inflated n; this floor (parallel to min_bets_per_half, which counts bets) rejects it. Reported as edge_markets_ok + out_of_sample_markets; gates only the flag/score, never membership. Legacy ledgers without market_id leave it inert. See docs/persistence_cluster_recheck.md.
+  oos_bootstrap_resamples: 2000 # market-block bootstrap resamples for the CLUSTER-ROBUST significance test that gates edge_significant. Held-out markets are resampled with replacement (bets within a market kept together, so one resolution event = one draw), giving a one-sided p (out_of_sample_cluster_p) robust to the clustering the per-bet t-test ignores. 2000 -> p-floor ~5e-4, ample for the 0.05 gate; deterministic (fixed per-wallet seed). The t-test p (out_of_sample_residual_p) is still reported for contrast but no longer gates. Metric D still uses the t-test (additive metadata, never certifies). See DECISIONS.md 'Cluster-robust significance'.
+  # --- PROJECT 1 scoped thresholds (read ONLY by src/validate.py via validate.certification_alpha) ---
+  # Why scoped: `oos_significance_alpha` above is GLOBAL and is also read by the
+  # slow-forecaster and sports arms (src/slow_validate.py, src/slow_forward.py,
+  # src/sports_forward.py, src/forecaster_metrics.py), which have LIVE, PRE-REGISTERED
+  # forward tests frozen against it (slow_freeze_manifest.json, sports_freeze_manifest.json,
+  # sports_sig2c_freeze_manifest.json). Moving the global would silently re-tune three
+  # running experiments, so Project 1 gets its own nested key and the global stays 0.05 —
+  # the same discipline scoring.slow.* / scoring.sports.* already use. Non-interference is
+  # asserted (bit-identical frames) by tests/test_scoped_alpha.py.
+  project1:
+    oos_significance_alpha: 0.005 # one-sided cluster-bootstrap p required for edge_significant. TIGHTENED from the global 0.05 on 2026-07-26. docs/persistence_fdr_hardened.md measured the certified set's false-discovery rate under the hardened gate for the first time: alpha=0.05 applied per wallet across a 691-candidate search is the DOMINANT source of false discoveries (~35 expected from multiplicity alone). Measured FDR curve, real and null at identical settings under the strict cell-permutation null: 0.05 -> 41 wallets @ 55% FDR; 0.0073 (BH q=0.05) -> 28 @ 23%; 0.005 -> 26 @ 20%; 0.001 -> 17 @ 10%. 0.005 is chosen over 0.001 because oos_bootstrap_resamples=2000 gives a p-floor of 1/2001: below 0.001 only TWO distinct p-values exist (0.0005, 0.0010), so an alpha=0.001 gate is resolution-limited by the resample count, whereas 0.005 leaves ~10 usable levels. It also sits just inside BH q=0.05's empirical threshold (0.0073), i.e. it is roughly the calibrated version of BH q=0.05 on this data. This moves only the edge_persisted FLAG (41 -> 26 wallets): nothing is dropped from the dataset or the ranking, per CLAUDE.md. Metric D keeps the GLOBAL alpha (it is additive metadata and never certifies). Remove this block and Project 1 falls back to the global key exactly as before.
+  # --- metric D: non-stationary / regime-change detection (additive metadata only; see DECISIONS.md "Metric D") ---
+  regime_min_bets: 50 # min bets in the RECENT (held-out) half before the D3 within-recent-regime sub-split is attempted. The recent half is split 50/50 and each sub-half must independently clear oos_significance_alpha + min_skill_edge, so this must comfortably exceed 2*min_bets_per_half. Only became-sharp wallets this deep can earn persisted_recent (a leakage-free confirmation conditional on the detected regime change); edge_persisted still stays False for them.
+  regime_trend_alpha: 0.05 # significance level for the D1 regime_flag classification (improving/decaying). A directional label needs BOTH a Welch two-sample difference between the early/recent half means AND a Spearman(residual, chronological order) time-trend, each significant at this level and agreeing in sign; otherwise stable. Purely descriptive — never feeds the score or edge_persisted.
+  # --- Project 3 slow-market speed buckets (ADDITIVE metadata; docs/project3_slow_markets.md §1.4/§2.2) ---
+  speed:
+    slow_lifespan_hours: 24 # market lifespan L (from the market_meta sidecar) >= this -> at least "slow" (§1.4 working default). L is closedTime-startDate where Gamma covers it, else the observed-tape lower bound (speed_source records which).
+    deep_slow_lifespan_days: 7 # L >= this -> "deep_slow", the core-thesis tier (§1.4). Below slow_lifespan_hours -> "fast"; no usable lifespan (speed_source=unknown / market absent from the sidecar) -> "unknown", filled on the next populate.
+    # These are tunable and NOT load-bearing. speed_bucket is an additive ledger column + a view: it NEVER feeds the score, rank order, or edge_persisted, and NEVER removes a row. Micro-crypto stays fully ingested/scored/addressable — it is a filter the user applies, not a filter-out (§8). Code defaults to 24h / 7d if these keys are absent.
+    min_skill_edge: 0.10 # ~10c economic-magnitude floor for the SLOW universe (docs/project3_slow_markets.md §5.2). SCOPED to Project 3 — it NEVER touches the global scoring.min_skill_edge (0.02), which Project 1's 41-wallet set depends on. Applied at slow-universe VALIDATION (step 5c), not the screen. Rationale: below ~10c a slow-market forecaster can't be told from noise within a human career (n=87 for 80% power at 10c vs ~180 years at 2c), so a lower floor yields unfalsifiable claims, not discoveries.
+    screen_shrinkage_k: 30 # shrinkage scale for the crude screen: screen_score = n/(n+k)*mean(residual_skill) (§4 stage 2). Default = min_sample_size. Shrinks small-n cells toward 0 so one lucky bet can't top the shortlist. The screen is a SELECTION step (never published); its numbers are selection noise by construction — validation on freshly-fetched deep data (step 5c) is what tests them.
+    screen_min_bets: 2 # a (wallet, category) cell needs >= this many slow-universe bets to be scored in the screen (shrinkage already kills n=1; this is a floor on top).
+    # --- step 5c: validation of the deepened shortlist on fresh deep data (all SCOPED to Project 3; none touch Project 1's gates) ---
+    min_bets_per_half: 10 # min slow bets in EACH oos half before a deepened wallet is tested (parallels the global min_bets_per_half).
+    min_oos_markets: 5 # min distinct HELD-OUT slow markets to certify (slow forecasters are thinner than P1's micro wallets, so below the global 30; the concentration guards below do the heavy lifting).
+    min_eff_breadth: 3.0 # concentration guard: 1/HHI of held-out per-market bet shares >= this (a wallet piled into one market is a one-off, not a repeatable forecaster — the §1.5 mirage shape).
+    min_entry_days: 3 # concentration guard: distinct calendar days with a held-out entry (temporal independence).
+    min_resolution_days: 3 # resolution-time clustering guard (§3.3): distinct held-out resolution-days (proxied by each market's last observed trade). Rejects a wallet whose held-out markets all settle on one event — the correlated-markets failure the bet-level null missed.
+
+  # --- SPORTS arm scoped thresholds (Project 3 sports step 4; docs/project3_sports_event_unit.md) ---
+  # Read ONLY by src/sports_validate.py via validate_slow(cfg_section="sports").
+  # Project 1 reads scoring.min_skill_edge (2c, above) and never this block; the slow
+  # arm reads scoring.slow. Nesting is what keeps the three arms from re-tuning each
+  # other, and it is asserted by tests/test_sports_validate.py.
+  sports:
+    min_skill_edge: 0.10 # ~10c economic floor on held-out skill edge, same scoped rationale as the slow arm's: on deep sports tapes the bootstrap certifies ~1c edges that are economically meaningless. NEVER applied to Project 1.
+    min_oos_markets: 5 # distinct held-out MARKETS (kept alongside the event floor below; markets are the finer unit and this gate is additive, never a substitute)
+    min_oos_complexes: 3 # distinct held-out EVENTS — the real cluster-count floor. A game is one event; a championship's whole outright field is ALSO one event, so buying 54 NBA-Finals team markets cannot clear this.
+    min_eff_breadth: 3.0 # 1/HHI of held-out market shares
+    min_eff_breadth_complex: 3.0 # 1/HHI of held-out EVENT shares — the concentration guard that bites
+    min_entry_days: 3 # distinct held-out entry days
+    min_entry_days_complex: 3 # distinct (event, entry-day) pairs
+    min_resolution_days: 3 # distinct held-out resolution days
+    min_resolution_days_complex: 3 # distinct (event, resolution-day) pairs
+    min_bets_per_half: 10 # resolved sports bets required in EACH chronological half
+
+ranking:
+  top_n: 200
+  w_edge: 1.0 # weight on validated out-of-sample SKILL (residual) edge — favorite-longshot-neutralized, per HANDOFF.md
+  w_copy_window: 0.5 # weight on copy_window (first-class per CLAUDE.md scoring)
+  w_earliness: 0.0 # UNUSED in scoring: earliness coincides exactly with copy_window in this data (both forward-drift windows capture the same clustered trades), so scoring both would double-count. Kept as a reported column; see DECISIONS.md.
+  w_time_consistency: 0.1 # weight on (time_consistency - 0.5), so a neutral 0.5 contributes nothing
+  breadth_full_credit: 10 # distinct markets at which the breadth down-weight reaches full credit (1.0)
+  non_persisted_penalty: 0.3 # reliability multiplier when edge_persisted is False (never 0 - wallet stays ranked)
+  copyable_window_floor: 0.0 # min copy_window (price units) for the `copyable` flag: how much followable room a copier still has after the wallet entered. Default 0.0 = strictly positive copy_window. Some wallets have real, significant SKILL edge but <=0 copy_window (edge realizes at resolution, not within the forward window) — unfollowable. This flag is a first-class, sortable signal kept SEPARATE from skill (edge_persisted); it never feeds the score. Raise it to require more room. See DECISIONS.md / HANDOFF.md.
+
+watch:
+  poll_seconds: 60 # how often to poll for new positions from watched wallets
+  top_n_wallets: 20 # watch this many top-ranked wallets (by rank, from data/processed/)
+  min_remaining_window: 0.02 # min remaining edge (price units, 0-1 scale) to alert on
+  webhook_url: null # optional ntfy/Discord webhook URL for phone push; null disables it
+
+# --- EXECUTION ROADMAP STAGE 1: forward PAPER trader (src/paper_trader.py) ---
+# PAPER ONLY. This section configures a read-only simulator: no keys, no signing,
+# no order placement, public unauthenticated GETs only. The ECONOMIC rule (stake,
+# fee model, placebo seed) is frozen into data/processed/paper_freeze_manifest.json
+# at `freeze` time and read from there at run time — these values are only the
+# DEFAULTS used when freezing, plus operational caps that an operator may TIGHTEN
+# (run time takes min(manifest, config), so config can never loosen a
+# pre-registration).
+paper:
+  notional_per_signal_usd: 100.0 # fixed stake per detected signal per arm. Fixed, not scaled: it keeps the three arms comparable and stops one big bet dominating the P&L.
+  max_notional_per_position_usd: 100.0 # SEATBELT: hard cap on any single paper position, applied on top of the stake.
+  max_open_positions: 5000 # SEATBELT: when this many paper orders are simultaneously live, new signals are recorded with status `skipped_cap` and open nothing. They still count in n_signals, so the cap costs the strategy rather than flattering it.
+  poll_seconds: 60 # sleep between passes when `run --passes N > 1`. On cron, one pass per invocation (see scripts/paper_trade.sh).
+  kill_switch_path: null # SEATBELT: null -> data/KILL_PAPER_TRADER. `touch` it and the loop halts before any fetch or write.
+  taker_fee_k: 0.0 # k in the taker fee `shares * k * price * (1-price)` (docs/project4_value_gate.md §3). NOT pinned by anything this repo has verified: Gamma reports `fee: None` on live sports lines (docs/project3_sports_metric_b.md §5), so 0.0 is the observed default. The CLOB's own taker_base_fee/maker_base_fee are captured per signal for later calibration.
+  taker_fee_k_stress: 0.10 # a second, deliberately pessimistic k. The scoreboard reports P&L at BOTH, so a reader can see how much of any result is a fee assumption.
+  placebo_fallback_horizon_hours: 6.0 # the placebo's random trigger is drawn over the market's remaining life, taken from the first of game_start_time / end_date_iso that is still in the FUTURE. When neither is (a live probe of 99 signals found 97 already past their end_date_iso — it is the midnight FLOOR of the scheduled end day, see src/market_meta.py) the draw falls back to this window. Kept SHORT on purpose: this universe is hourly-to-daily markets, and a multi-day fallback would simply never fire and would hand the control arm a fake no-fill.
+  enforce_min_order_size: true # a fill below the token's own minimum order size is NOT a fill — the exchange would have rejected it. Set false only to measure how much that check costs.
+
+backfill:
+  # Deepen per-wallet history via /trades?user=<wallet>. The global feed only
+  # shows recent platform-wide trades so per-wallet samples are thin; per-user
+  # queries return a wallet's (near-)complete record up to the same ~10k offset
+  # cap. This is the top lever on forward validity (see DECISIONS.md/HANDOFF.md).
+  top_n_wallets: 500 # deepen this many top-ranked wallets per run (seeded from data/processed/ranked_wallets.parquet)
+  wallet_batch_size: 25 # wallets fetched+folded per batch. Bounds peak memory to ~one batch of trades (the fat raw dicts are freed after each batch is folded into the ledger); a from-empty top-500 run would OOM the 3.7GB box otherwise. Lower it if memory is tight.
+  checkpoint_min_rows: 100000 # persist the ledger (a ~250MB gzip write) once this many new rows have been folded, plus always at the end. Bounds crash re-fetch on a long from-empty run without saving on every batch; a caught-up nightly run adds fewer than this and so saves just once at the end.
+  page_size: 500 # rows per /trades page
+  max_pages_per_wallet: 20 # 20 * 500 = 10,000 = the per-user offset ceiling
+  request_timeout_sec: 20
+  sleep_between_requests_sec: 0.1 # politeness delay between pages
+  max_resolution_fetches_per_run: 2000 # cap resolution GETs per run; a deep first backfill surfaces thousands of new markets, the rest resolve on later runs via resolution_recheck
+
+disk:
+  cap_gb: 5

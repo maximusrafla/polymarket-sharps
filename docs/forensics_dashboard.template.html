@@ -1,0 +1,854 @@
+<title>Wallet forensics — the shape of the edge</title>
+
+<style>
+  .root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --plane: #f9f9f7;
+    --ink-1: #0b0b0b;
+    --ink-2: #52514e;
+    --ink-3: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --hair: rgba(11,11,11,0.10);
+    --pos: #2a78d6;
+    --neg: #e34948;
+    --s1: #2a78d6;
+    --s2: #eb6834;
+    --neutral: #d8d7d0;
+    --chip: rgba(11,11,11,0.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .root {
+      color-scheme: dark;
+      --surface-1: #1a1a19; --plane: #0d0d0d; --ink-1: #ffffff;
+      --ink-2: #c3c2b7; --ink-3: #898781; --grid: #2c2c2a; --axis: #383835;
+      --hair: rgba(255,255,255,0.10);
+      --pos: #3987e5; --neg: #e66767; --s1: #3987e5; --s2: #d95926;
+      --neutral: #3a3a37; --chip: rgba(255,255,255,0.07);
+    }
+  }
+  :root[data-theme="dark"] .root {
+    color-scheme: dark;
+    --surface-1: #1a1a19; --plane: #0d0d0d; --ink-1: #ffffff;
+    --ink-2: #c3c2b7; --ink-3: #898781; --grid: #2c2c2a; --axis: #383835;
+    --hair: rgba(255,255,255,0.10);
+    --pos: #3987e5; --neg: #e66767; --s1: #3987e5; --s2: #d95926;
+    --neutral: #3a3a37; --chip: rgba(255,255,255,0.07);
+  }
+
+  .root {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--plane); color: var(--ink-1);
+    line-height: 1.55; padding: 32px 20px 72px; overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: clamp(1.6rem, 3.6vw, 2.3rem); line-height: 1.15; margin: 0 0 10px; letter-spacing: -0.02em; }
+  h2 { font-size: 1.06rem; margin: 44px 0 4px; letter-spacing: -0.01em; }
+  h3 { font-size: .92rem; margin: 0 0 2px; }
+  p  { margin: 0 0 12px; color: var(--ink-2); font-size: .93rem; max-width: 74ch; }
+  .lede { font-size: 1.02rem; color: var(--ink-2); max-width: 76ch; }
+  .sub { font-size: .82rem; color: var(--ink-3); margin: 0 0 22px; }
+  .rule { height:1px; background: var(--hair); border:0; margin: 34px 0 0; }
+  a { color: var(--s1); }
+
+  .card {
+    background: var(--surface-1); border: 1px solid var(--hair);
+    border-radius: 12px; padding: 18px 18px 16px; margin-top: 14px;
+  }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px,1fr)); gap: 14px; }
+  .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px,1fr)); gap: 12px; }
+
+  /* findings */
+  .find { display:grid; grid-template-columns: 26px 1fr; gap: 12px; align-items:start; }
+  .find .n { font-size:.72rem; font-weight:700; color: var(--ink-3); padding-top:3px; font-variant-numeric: tabular-nums; }
+  .find h3 { font-size: .95rem; margin-bottom: 4px; }
+  .find p { font-size: .87rem; margin: 0; }
+  .verdict { display:inline-block; font-size:.68rem; font-weight:700; letter-spacing:.06em;
+             text-transform:uppercase; padding: 2px 7px; border-radius: 5px;
+             background: var(--chip); color: var(--ink-2); margin-left: 8px; vertical-align: 2px; }
+
+  /* stat tiles */
+  .tile { background: var(--surface-1); border:1px solid var(--hair); border-radius:10px; padding: 12px 14px; }
+  .tile .k { font-size:.73rem; color: var(--ink-3); margin-bottom: 3px; }
+  .tile .v { font-size: 1.32rem; font-weight: 600; letter-spacing:-.02em; }
+  .tile .m { font-size:.73rem; color: var(--ink-3); margin-top:2px; }
+
+  /* controls */
+  .filters { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin: 14px 0 0; }
+  input[type=search], select {
+    font: inherit; font-size:.88rem; padding: 7px 11px; border-radius: 8px;
+    border: 1px solid var(--hair); background: var(--surface-1); color: var(--ink-1);
+  }
+  input[type=search] { min-width: 210px; }
+  .btn { font: inherit; font-size:.78rem; padding: 5px 10px; border-radius:7px; cursor:pointer;
+         border:1px solid var(--hair); background: var(--surface-1); color: var(--ink-2); }
+  .btn:hover { color: var(--ink-1); }
+
+  /* wallet list */
+  .wlist { max-height: 268px; overflow-y: auto; border:1px solid var(--hair); border-radius:10px;
+           background: var(--surface-1); margin-top: 10px; }
+  .wrow { display:grid; grid-template-columns: 1fr 74px 66px 62px; gap: 8px; padding: 7px 12px;
+          font-size:.8rem; cursor:pointer; border-bottom:1px solid var(--hair);
+          font-variant-numeric: tabular-nums; align-items:center; }
+  .wrow:last-child { border-bottom:0; }
+  .wrow:hover { background: var(--chip); }
+  .wrow.sel { background: var(--chip); box-shadow: inset 3px 0 0 var(--s1); }
+  .wrow .addr { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.78rem; }
+  .wrow .num { text-align: right; color: var(--ink-2); }
+  .whead { display:grid; grid-template-columns: 1fr 74px 66px 62px; gap:8px; padding: 7px 12px;
+           font-size:.72rem; color: var(--ink-3); border-bottom:1px solid var(--hair);
+           position: sticky; top:0; background: var(--surface-1); z-index:1; }
+  .whead .num { text-align:right; }
+
+  /* market drill-down */
+  .mkhead, .mkrow { display:grid; grid-template-columns: 1fr 44px 42px 60px 62px 74px; gap:8px;
+                    padding: 7px 12px; font-size:.8rem; font-variant-numeric: tabular-nums;
+                    align-items:center; }
+  .mkhead { font-size:.72rem; color: var(--ink-3); border-bottom:1px solid var(--hair);
+            position:sticky; top:0; background: var(--surface-1); z-index:1; }
+  .mkrow { border-bottom:1px solid var(--hair); cursor:pointer; }
+  .mkrow:last-child { border-bottom:0; }
+  .mkrow:hover { background: var(--chip); }
+  .mkrow.sel { background: var(--chip); box-shadow: inset 3px 0 0 var(--s1); }
+  .mkrow .q { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mkhead .num, .mkrow .num { text-align:right; color: var(--ink-2); }
+  .pos { color: var(--pos); } .neg { color: var(--neg); }
+  .pill { display:inline-block; font-size:.68rem; padding:1px 6px; border-radius:5px;
+          background: var(--chip); color: var(--ink-3); margin-left:6px; }
+
+  /* charts */
+  .chartwrap { overflow-x: auto; }
+  svg { display:block; max-width:100%; height:auto; }
+  .glab { font-size: 10.5px; fill: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .vlab { font-size: 10.5px; fill: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  .axisline { stroke: var(--axis); stroke-width: 1; }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:.78rem; color: var(--ink-2); margin: 2px 0 8px; }
+  .legend i { width:10px; height:10px; border-radius:3px; display:inline-block; margin-right:6px; vertical-align:-1px; }
+
+  .tip {
+    position: fixed; pointer-events: none; opacity: 0; transition: opacity .1s;
+    background: var(--surface-1); border:1px solid var(--hair); border-radius: 8px;
+    padding: 8px 10px; font-size: .78rem; color: var(--ink-1); z-index: 50;
+    box-shadow: 0 6px 20px rgba(0,0,0,.14); max-width: 250px; font-variant-numeric: tabular-nums;
+  }
+  .tip b { display:block; font-size:.8rem; margin-bottom:3px; }
+  .tip span { color: var(--ink-3); }
+
+  table { border-collapse: collapse; width:100%; font-size:.8rem; font-variant-numeric: tabular-nums; }
+  th, td { text-align:right; padding: 5px 8px; border-bottom: 1px solid var(--hair); }
+  th:first-child, td:first-child { text-align:left; }
+  th { color: var(--ink-3); font-weight:600; font-size:.74rem; }
+  details { margin-top: 10px; }
+  summary { font-size:.78rem; color: var(--ink-3); cursor:pointer; }
+  summary:hover { color: var(--ink-2); }
+  .note { font-size:.79rem; color: var(--ink-3); margin-top: 8px; }
+  .cardhead { display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:8px; }
+  .cardhead .h { font-size:.9rem; font-weight:600; }
+  .cardhead .s { font-size:.75rem; color: var(--ink-3); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.85em;
+         background: var(--chip); padding: 1px 5px; border-radius:4px; }
+</style>
+
+<div class="root">
+<div class="wrap">
+
+  <h1>Wallet forensics — the shape of the edge</h1>
+  <p class="lede">Every conclusion in this project so far has been a <em>mean</em> in cents with a confidence
+  interval. A mean of +2¢ can be five hundred quiet +2¢ bets, or one longshot that hit, or strongly
+  positive in one price band and negative in another. This page computes the shape instead of the
+  average, for every wallet deep enough to support the claim.</p>
+  <p class="sub" id="scale"></p>
+
+  <hr class="rule">
+  <h2>What the modelling found</h2>
+  <p>Six results, in the order they were produced. Each was tested against the way it could most
+  obviously be fake before being written down.</p>
+  <div id="findings"></div>
+
+  <hr class="rule">
+  <h2>Does past edge predict future edge?</h2>
+  <p>Each wallet's own history is split chronologically in half. The first half is the tip; the second
+  half is the exam. Events appearing in <em>both</em> halves are dropped from both — the same
+  resolution counted twice manufactures agreement out of nothing, which is exactly the trap the
+  streak-following test fell into.</p>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="cardhead"><span class="h">Second-half edge, by first-half quintile</span>
+        <span class="s">cents/share</span></div>
+      <div class="legend">
+        <span><i style="background:var(--s1)"></i>First half (the tip)</span>
+        <span><i style="background:var(--s2)"></i>Second half (the exam)</span>
+      </div>
+      <div class="chartwrap"><svg id="quint" role="img" aria-label="Second-half edge by first-half quintile"></svg></div>
+      <p class="note" id="quintnote"></p>
+      <details><summary>Table view</summary><div id="quinttab"></div></details>
+    </div>
+
+    <div class="card">
+      <div class="cardhead"><span class="h">Every scored wallet</span>
+        <span class="s">click a point to inspect it</span></div>
+      <div class="chartwrap"><svg id="scatter" role="img" aria-label="Wallet edge against effective events"></svg></div>
+      <p class="note">Horizontal axis is <em>effective</em> events (Kish), not bets — a wallet that
+      bought one outcome across forty correlated markets counts once, not forty times. The funnel
+      shape is the whole story: edge disperses as sample shrinks, which is what noise looks like.</p>
+    </div>
+  </div>
+
+  <hr class="rule">
+  <h2>Inspect a wallet</h2>
+  <p>Pick any wallet and read its distribution rather than its average. The price-band panel is the one
+  that answers "is this wallet sharp everywhere, or sharp in one corner and bad elsewhere?" — a question
+  no number previously produced in this project could answer.</p>
+
+  <div class="filters">
+    <input type="search" id="search" placeholder="Search wallet address…" aria-label="Search wallet address">
+    <select id="sort" aria-label="Sort wallets by">
+      <option value="resid_event_c">Sort: edge, best first</option>
+      <option value="-resid_event_c">Sort: edge, worst first</option>
+      <option value="t_event">Sort: t-statistic</option>
+      <option value="eff_events">Sort: effective events</option>
+      <option value="n_bets">Sort: bets</option>
+      <option value="conviction_c">Sort: conviction</option>
+      <option value="-drop_best_event_c">Sort: most fragile</option>
+    </select>
+    <button class="btn" id="rand">Random wallet</button>
+    <span class="s" id="listcount" style="font-size:.78rem;color:var(--ink-3)"></span>
+  </div>
+
+  <div class="wlist" id="wlist">
+    <div class="whead"><span>wallet</span><span class="num">edge ¢</span><span class="num">eff ev</span><span class="num">bets</span></div>
+    <div id="wrows"></div>
+  </div>
+
+  <div class="grid3" style="margin-top:14px" id="tiles"></div>
+
+  <div class="grid2" style="margin-top:14px">
+    <div class="card">
+      <div class="cardhead"><span class="h">Edge by entry-price band</span><span class="s">cents/share</span></div>
+      <div class="chartwrap"><svg id="bands" role="img" aria-label="Edge by entry price band"></svg></div>
+      <p class="note">Bars show skill edge — how far the wallet beat the market's own calibration curve
+      at the price it paid. Bands with fewer than 8 events are drawn faint: they are noise, not shape.</p>
+      <details><summary>Table view</summary><div id="bandtab"></div></details>
+    </div>
+    <div class="card">
+      <div class="cardhead"><span class="h">Edge by category</span><span class="s">cents/share</span></div>
+      <div class="chartwrap"><svg id="cats" role="img" aria-label="Edge by market category"></svg></div>
+      <p class="note">Categories the wallet touched, most-traded first. Same faint rule for thin cells.</p>
+      <details><summary>Table view</summary><div id="cattab"></div></details>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:14px">
+    <div class="card">
+      <div class="cardhead"><span class="h">Edge by calendar year</span><span class="s">cents/share</span></div>
+      <div class="chartwrap"><svg id="years" role="img" aria-label="Edge by calendar year"></svg></div>
+      <p class="note">A single spike in one year with flat years around it is a lucky season, not a skill.</p>
+      <details><summary>Table view</summary><div id="yeartab"></div></details>
+    </div>
+    <div class="card">
+      <div class="cardhead"><span class="h">How much of this record is one event?</span><span class="s">robustness</span></div>
+      <div id="robust"></div>
+      <p class="note">If removing a single resolution event moves the wallet's edge a long way, the record
+      is one bet wearing a track record's clothes.</p>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px" id="curvecard" hidden>
+    <div class="cardhead"><span class="h">Cumulative record over time</span>
+      <span class="s">
+        <button class="btn" id="curveUsd" aria-pressed="true">Dollars</button>
+        <button class="btn" id="curveC" aria-pressed="false">Skill edge</button>
+      </span></div>
+    <div class="chartwrap"><svg id="curve" role="img" aria-label="Cumulative record over time"></svg></div>
+    <p class="note" id="curvenote"></p>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <div class="cardhead"><span class="h">Every market this wallet traded</span>
+      <span class="s" id="mkstat"></span></div>
+    <div id="drillnote"></div>
+    <div class="filters" id="mkfilters" hidden>
+      <input type="search" id="mksearch" placeholder="Filter markets…" aria-label="Filter markets">
+      <select id="mksort" aria-label="Sort markets by">
+        <option value="bets">Sort: most bets</option>
+        <option value="net">Sort: most profitable</option>
+        <option value="-net">Sort: biggest losses</option>
+        <option value="edge">Sort: best edge</option>
+        <option value="-edge">Sort: worst edge</option>
+        <option value="notional">Sort: most staked</option>
+        <option value="time">Sort: most recent</option>
+      </select>
+    </div>
+    <div class="wlist" id="mklist" hidden style="max-height:300px">
+      <div class="mkhead"><span>market</span><span class="num">bets</span><span class="num">won</span>
+        <span class="num">avg price</span><span class="num">edge ¢</span>
+        <span class="num">net $</span></div>
+      <div id="mkrows"></div>
+    </div>
+    <div id="betpanel" hidden style="margin-top:14px">
+      <div class="cardhead"><span class="h" id="bettitle"></span><span class="s" id="betsub"></span></div>
+      <div class="chartwrap"><div id="bettab"></div></div>
+    </div>
+  </div>
+
+  <hr class="rule">
+  <h2>How to read this, and what it cannot tell you</h2>
+  <div class="card">
+    <div id="method"></div>
+  </div>
+
+</div>
+</div>
+<div class="tip" id="tip" role="tooltip"></div>
+
+<script id="payload" type="application/json">__DATA__</script>
+<script>
+(function(){
+"use strict";
+const D = JSON.parse(document.getElementById('payload').textContent);
+const W = D.wallets, N = W.wallet.length, C = D.checks, P = D.population;
+const tip = document.getElementById('tip');
+const $ = id => document.getElementById(id);
+
+const fmtc = v => v==null||!isFinite(v) ? '—' : (v>=0?'+':'') + v.toFixed(2) + '¢';
+const fmtusd = v => {
+  if(v==null||!isFinite(v)) return '—';
+  const s = v<0?'−':'', a = Math.abs(v);
+  return s+'$'+(a>=10000 ? Math.round(a).toLocaleString('en-US')
+                         : a.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}));
+};
+const fmtn = v => v==null ? '—' : v.toLocaleString('en-US');
+const short = a => a.slice(0,8) + '…' + a.slice(-4);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+// ---- wallet records as objects, built once
+const KEYS = Object.keys(W).filter(k=>k!=='wallet');
+const recs = [];
+for (let i=0;i<N;i++){ const o={wallet:W.wallet[i], i}; for(const k of KEYS) o[k]=W[k][i]; recs.push(o); }
+const byAddr = new Map(recs.map(r=>[r.wallet,r]));
+
+$('scale').textContent =
+  fmtn(P.n_bets) + ' resolved real-world bets · ' + fmtn(P.n_wallets) +
+  ' performance-blind wallets · ' + fmtn(P.n_events) + ' resolution events · ' +
+  new Date(P.ts_min*1000).toISOString().slice(0,10) + ' → ' +
+  new Date(P.ts_max*1000).toISOString().slice(0,10) + ' · ' +
+  fmtn(N) + ' wallets deep enough to score (≥' + D.min_bets + ' bets, ≥' + D.min_events + ' events)';
+
+// ---------------------------------------------------------------- findings
+// Rendered at boot, AFTER the quintile block, so the two quintile figures quoted
+// here are the same objects the chart draws and cannot drift apart.
+function renderFindings(){
+const FINDINGS = [
+ ['The core metric is sound. I went looking for a bug and did not find one.','No change',
+  'Entry prices here take 467,527 distinct values, but the engine fits its price-calibration curve over '+
+  'just 20 quantile bins — coarse enough that a wallet sitting systematically high inside its bins could '+
+  'manufacture edge from nothing. Refitting at 200 and 1,000 bins moves the top-100 cohort\'s edge from '+
+  '+4.855¢ to +4.868¢ and +4.831¢, and 97 of the same 100 wallets remain. The binning is not doing any work.'],
+ ['Past edge really does predict future edge.','Real',
+  'Chronological split-half, with every event shared across the split removed from both halves: '+
+  'Spearman ρ = +0.185 over 1,174 wallets, against a permuted null of +0.001 (95% band −0.054 to +0.056), '+
+  'P &lt; 0.0001. Raw ρ was +0.252, so about a quarter of the apparent persistence was the same event '+
+  'counted on both sides. The ranking carries genuine information — but findings 3 and 4 are about '+
+  '<em>where</em> in the ranking that information actually sits, and the answer is not where anyone '+
+  'has been looking.'],
+ ['Picking the best wallets buys you nothing you can measure.','Dead end',
+  'The top first-half quintile earns <b>'+fmtc(Q[4].h2)+'</b> per share in its second half — t = 0.74, '+
+  'p = 0.46, indistinguishable from zero, before the ~1.20¢ taker fee is even charged. Selecting harder '+
+  'makes it worse: the top <em>decile</em> keeps <b>1%</b> of its first-half edge. Three years of tape, '+
+  fmtn(pers.length)+' wallets deep enough to judge, and the best-performing group a selector could name '+
+  'in advance goes on to earn nothing.'],
+ ['But the bad wallets are extremely predictable — and nobody here has ever looked.','New direction',
+  'The worst first-half quintile goes on to earn <b>'+fmtc(Q[0].h2)+'</b> in its second half: t = −4.79, '+
+  'p = 3×10⁻⁶. That is '+Math.abs(Q[0].h2/Q[4].h2).toFixed(1)+'× the magnitude of the positive side and '+
+  'it is the part of the ranking that '+
+  'carries essentially all of finding 2\'s persistence. It survives price stratification — worst-quintile '+
+  'second halves run −1.73¢, −1.11¢ and −0.12¢ across low, mid and high price terciles — so it is not '+
+  'merely "longshot buyers lose". This project has spent its entire life searching for wallets to '+
+  'follow. The data says the reliable signal is the other one.'],
+ ['Wallets bet bigger on their worse bets.','New',
+  'Weighting each wallet\'s residual by the dollars it actually staked, rather than counting every bet '+
+  'equally, moves the typical wallet −0.112¢ (57.4% of wallets negative, Wilcoxon p = 9×10⁻⁵, same sign '+
+  'in every price tercile). Every headline number in this repo is bet-weighted, so it flatters these '+
+  'wallets: their real dollar performance is worse than their measured edge, and copying them in '+
+  'proportion to their size would underperform the published figures.'],
+ ['Fragility is a middle-of-the-table problem, not a top-of-the-table one.','Reassuring',
+  'Remove each wallet\'s single best resolution event: the median positive-edge wallet keeps 79% of its '+
+  'edge, and 12% flip negative on that one deletion. But among the top 50 by edge, none flip and the '+
+  'median keeps 89.6%. The "one crazy win" worry is real for mid-tier records and largely absent at the top.'],
+ ['A caution about the method the project has been leaning on.','Method',
+  'The "can you rank wallets?" question has been answered with a dispersion-versus-null test. That test '+
+  'is extremely sensitive to how the null is built: a null that shuffles events freely returns real '+
+  'dispersion <em>narrower</em> than chance (P = 1.000, which is a broken null, not a result), and '+
+  'stratifying it by event weight still gives P = 0.957. The split-half test above needs no synthetic '+
+  'null at all — shuffling which second half is paired with which first half is exact — and it is the '+
+  'more powerful design. Where they disagree, trust the split-half.'],
+ ['One thing left unexplained.','Open',
+  'After the favourite–longshot curve is removed, wallets that habitually buy favourites <em>still</em> '+
+  'show higher skill edge: correlation between a wallet\'s mean entry price and its residual is +0.21, '+
+  'and it does not move at 200 or 1,000 bins, so it is not a binning artifact. Either the residualization '+
+  'is leaving something behind at high prices, or favourite-buyers are genuinely better. Not resolved here.']
+];
+$('findings').innerHTML = FINDINGS.map((f,i)=>
+  '<div class="card"><div class="find"><div class="n">'+String(i+1).padStart(2,'0')+'</div><div>'+
+  '<h3>'+f[0]+'<span class="verdict">'+f[1]+'</span></h3><p>'+f[2]+'</p></div></div></div>').join('');
+}
+
+// ---------------------------------------------------------------- tooltip
+function showTip(ev, html){
+  tip.innerHTML = html; tip.style.opacity = 1;
+  const r = tip.getBoundingClientRect();
+  tip.style.left = clamp(ev.clientX+14, 8, window.innerWidth-r.width-8)+'px';
+  tip.style.top  = clamp(ev.clientY-r.height-12, 8, window.innerHeight-r.height-8)+'px';
+}
+const hideTip = () => tip.style.opacity = 0;
+
+const SVGNS='http://www.w3.org/2000/svg';
+function el(n,a){const e=document.createElementNS(SVGNS,n);for(const k in a)e.setAttribute(k,a[k]);return e;}
+function txt(x,y,s,cls,anchor){const t=el('text',{x,y,class:cls||'glab'});
+  if(anchor)t.setAttribute('text-anchor',anchor); t.textContent=s; return t;}
+
+// ---------------------------------------------------------------- quintiles
+// h1_disjoint / h2_disjoint, NOT the raw halves: events appearing on both sides of
+// the split are removed from both, so the same outcome cannot vote twice.
+const pers = recs.filter(r=>r.n1_disjoint>=20 && r.n2_disjoint>=20 &&
+                            r.h1_disjoint!=null && r.h2_disjoint!=null);
+pers.sort((a,b)=>a.h1_disjoint-b.h1_disjoint);
+const QN=5, Q=[];
+for(let q=0;q<QN;q++){
+  const a=Math.floor(q*pers.length/QN), b=Math.floor((q+1)*pers.length/QN);
+  const s=pers.slice(a,b);
+  const mean=k=>s.reduce((t,r)=>t+r[k],0)/s.length;
+  Q.push({label:['1 worst','2','3','4','5 best'][q], n:s.length, h1:mean('h1_disjoint'),
+          h2:mean('h2_disjoint'), price:mean('mean_price')});
+}
+function drawQuint(){
+  const svg=$('quint'); svg.innerHTML='';
+  const w=460,h=250,ml=44,mr=12,mt=10,mb=42;
+  svg.setAttribute('viewBox','0 0 '+w+' '+h); svg.setAttribute('width',w); svg.setAttribute('height',h);
+  const vals=Q.flatMap(d=>[d.h1,d.h2]);
+  const lo=Math.min(...vals,0), hi=Math.max(...vals,0), pad=(hi-lo)*0.12;
+  const y=v=>mt+(hi+pad-v)/((hi+pad)-(lo-pad))*(h-mt-mb);
+  const bw=(w-ml-mr)/QN, gap=10, sub=(bw-gap*2)/2;
+  for(let i=0;i<=4;i++){
+    const v=lo-pad+i*((hi+pad)-(lo-pad))/4;
+    svg.appendChild(el('line',{x1:ml,x2:w-mr,y1:y(v),y2:y(v),class:'gridline'}));
+    svg.appendChild(txt(ml-7,y(v)+3.5,v.toFixed(1),'glab','end'));
+  }
+  svg.appendChild(el('line',{x1:ml,x2:w-mr,y1:y(0),y2:y(0),class:'axisline'}));
+  Q.forEach((d,i)=>{
+    const x0=ml+i*bw+gap/2;
+    [['h1','var(--s1)',0],['h2','var(--s2)',1]].forEach(([k,col,j])=>{
+      const v=d[k], yy=Math.min(y(v),y(0)), hh=Math.max(1.5,Math.abs(y(v)-y(0)));
+      const r=el('rect',{x:x0+j*(sub+2),y:yy,width:sub,height:hh,fill:col,rx:3});
+      r.style.cursor='default';
+      r.addEventListener('mousemove',e=>showTip(e,'<b>Quintile '+d.label+'</b>'+
+        (k==='h1'?'First':'Second')+' half: '+fmtc(v)+'<br><span>'+d.n+' wallets · mean price '+
+        d.price.toFixed(2)+'</span>'));
+      r.addEventListener('mouseleave',hideTip);
+      svg.appendChild(r);
+    });
+    svg.appendChild(txt(x0+bw/2-gap/2,h-mb+16,d.label,'glab','middle'));
+    svg.appendChild(txt(x0+bw/2-gap/2,h-mb+29,fmtc(d.h2),'vlab','middle'));
+  });
+  svg.appendChild(txt(4,mt+2,'¢/share','glab'));
+  $('quintnote').innerHTML='The orange bar is what you would actually earn. Note the shape: it is not a '+
+    'ramp, it is a <b>floor rising to nothing</b>. The best quintile reaches only <b>'+fmtc(Q[4].h2)+
+    '</b> (p = 0.46, indistinguishable from zero, before a ~1.20¢ fee), while the worst sinks to <b>'+
+    fmtc(Q[0].h2)+'</b> (p = 3×10⁻⁶). Almost all of the predictive power lives on the left.';
+  $('quinttab').innerHTML='<table><thead><tr><th>first-half quintile</th><th>wallets</th>'+
+    '<th>first half</th><th>second half</th><th>mean price</th></tr></thead><tbody>'+
+    Q.map(d=>'<tr><td>'+d.label+'</td><td>'+d.n+'</td><td>'+fmtc(d.h1)+'</td><td>'+fmtc(d.h2)+
+    '</td><td>'+d.price.toFixed(2)+'</td></tr>').join('')+'</tbody></table>';
+}
+
+// ---------------------------------------------------------------- scatter
+let selected = null;
+function drawScatter(){
+  const svg=$('scatter'); svg.innerHTML='';
+  const w=460,h=250,ml=44,mr=12,mt=10,mb=38;
+  svg.setAttribute('viewBox','0 0 '+w+' '+h); svg.setAttribute('width',w); svg.setAttribute('height',h);
+  const pts=recs.filter(r=>r.eff_events>0&&r.resid_event_c!=null);
+  const xs=v=>ml+(Math.log10(v)-0)/(Math.log10(3000)-0)*(w-ml-mr);
+  const ys=Math.max(...pts.map(p=>Math.abs(p.resid_event_c)));
+  const ylim=Math.min(ys,26);
+  const y=v=>mt+(ylim-clamp(v,-ylim,ylim))/(2*ylim)*(h-mt-mb);
+  [-20,-10,0,10,20].forEach(v=>{
+    svg.appendChild(el('line',{x1:ml,x2:w-mr,y1:y(v),y2:y(v),class:v===0?'axisline':'gridline'}));
+    svg.appendChild(txt(ml-7,y(v)+3.5,v>0?'+'+v:''+v,'glab','end'));
+  });
+  [1,10,100,1000].forEach(v=>{
+    svg.appendChild(el('line',{x1:xs(v),x2:xs(v),y1:mt,y2:h-mb,class:'gridline'}));
+    svg.appendChild(txt(xs(v),h-mb+14,fmtn(v),'glab','middle'));
+  });
+  svg.appendChild(txt((ml+w-mr)/2,h-mb+29,'effective events (log)','glab','middle'));
+  svg.appendChild(txt(4,mt+2,'¢/share','glab'));
+  const g=el('g',{});
+  pts.forEach(p=>{
+    const c=el('circle',{cx:xs(Math.max(p.eff_events,1)),cy:y(p.resid_event_c),r:2.4,
+      fill:'var(--neutral)','fill-opacity':0.85});
+    c.style.cursor='pointer'; c.dataset.w=p.wallet;
+    c.addEventListener('mousemove',e=>showTip(e,'<b>'+short(p.wallet)+'</b>'+fmtc(p.resid_event_c)+
+      '<br><span>'+p.eff_events.toFixed(0)+' eff. events · '+fmtn(p.n_bets)+' bets</span>'));
+    c.addEventListener('mouseleave',hideTip);
+    c.addEventListener('click',()=>select(p.wallet));
+    g.appendChild(c);
+  });
+  svg.appendChild(g);
+  const hi=el('circle',{r:5,fill:'var(--s1)',stroke:'var(--surface-1)','stroke-width':2,
+    id:'selpt',opacity:0}); svg.appendChild(hi);
+  svg._x=xs; svg._y=y;
+}
+function markScatter(r){
+  const svg=$('scatter'), pt=$('selpt'); if(!pt||!r) return;
+  if(r.eff_events>0&&r.resid_event_c!=null){
+    pt.setAttribute('cx',svg._x(Math.max(r.eff_events,1)));
+    pt.setAttribute('cy',svg._y(r.resid_event_c));
+    pt.setAttribute('opacity',1);
+  } else pt.setAttribute('opacity',0);
+}
+
+// ---------------------------------------------------------------- diverging bars
+function drawDiv(svgId, rows, tabId, opts){
+  const svg=$(svgId); svg.innerHTML='';
+  const n=rows.length;
+  if(!n){ svg.setAttribute('viewBox','0 0 460 60'); svg.appendChild(txt(12,34,'No data for this wallet.','glab'));
+          if(tabId)$(tabId).innerHTML=''; return; }
+  const rowh=Math.max(19,Math.min(27,300/n));
+  const w=460,h=Math.max(90,n*rowh+42),ml=opts.labelw,mr=54,mt=8,mb=26;
+  svg.setAttribute('viewBox','0 0 '+w+' '+h); svg.setAttribute('width',w); svg.setAttribute('height',h);
+  const m=Math.max(2,...rows.map(r=>Math.abs(r.v)))*1.12;
+  const x=v=>ml+(clamp(v,-m,m)+m)/(2*m)*(w-ml-mr);
+  [-m,-m/2,0,m/2,m].forEach(v=>{
+    svg.appendChild(el('line',{x1:x(v),x2:x(v),y1:mt,y2:h-mb,class:v===0?'axisline':'gridline'}));
+    svg.appendChild(txt(x(v),h-mb+14,(v>0?'+':'')+v.toFixed(1),'glab','middle'));
+  });
+  rows.forEach((r,i)=>{
+    const cy=mt+i*rowh+rowh/2, bh=Math.min(13,rowh-7);
+    const thin=r.ne<8;
+    const col=r.v>=0?'var(--pos)':'var(--neg)';
+    const x0=Math.min(x(0),x(r.v)), bw=Math.max(2,Math.abs(x(r.v)-x(0)));
+    const rect=el('rect',{x:x0,y:cy-bh/2,width:bw,height:bh,fill:col,rx:3,
+      'fill-opacity':thin?0.32:1});
+    rect.style.cursor='default';
+    rect.addEventListener('mousemove',e=>showTip(e,'<b>'+r.k+'</b>'+fmtc(r.v)+
+      (r.se!=null?' ± '+(1.96*r.se).toFixed(2):'')+'<br><span>'+fmtn(r.n)+' bets · '+fmtn(r.ne)+
+      ' events · mean price '+(r.p!=null?r.p.toFixed(2):'—')+(thin?' · thin, treat as noise':'')+'</span>'));
+    rect.addEventListener('mouseleave',hideTip);
+    svg.appendChild(rect);
+    svg.appendChild(txt(ml-8,cy+3.5,r.k,'glab','end'));
+    svg.appendChild(txt(w-mr+6,cy+3.5,fmtc(r.v),'vlab'));
+  });
+  if(tabId) $(tabId).innerHTML='<table><thead><tr><th>'+opts.keyname+'</th><th>bets</th><th>events</th>'+
+    '<th>edge</th><th>±95%</th><th>mean price</th></tr></thead><tbody>'+
+    rows.map(r=>'<tr><td>'+r.k+'</td><td>'+fmtn(r.n)+'</td><td>'+fmtn(r.ne)+'</td><td>'+fmtc(r.v)+
+    '</td><td>'+(r.se!=null?(1.96*r.se).toFixed(2):'—')+'</td><td>'+(r.p!=null?r.p.toFixed(2):'—')+
+    '</td></tr>').join('')+'</tbody></table>';
+}
+const toRows = arr => (arr||[]).map(a=>({k:a[0],n:a[1],ne:a[2],v:a[3],se:a[4],p:a[5]}));
+
+// ---------------------------------------------------------------- selection
+function select(addr){
+  const r=byAddr.get(addr); if(!r) return;
+  selected=addr;
+  document.querySelectorAll('.wrow').forEach(e=>e.classList.toggle('sel',e.dataset.w===addr));
+  markScatter(r);
+
+  const ci=1.96*(r.resid_event_se||0);
+  const tiles=[
+    ['Skill edge','resid', fmtc(r.resid_event_c), '± '+ci.toFixed(2)+'¢ (95%, event-clustered)'],
+    ['Effective events', 'eff', r.eff_events!=null?r.eff_events.toFixed(0):'—',
+      fmtn(r.n_events)+' raw events · '+fmtn(r.n_markets)+' markets'],
+    ['Resolved bets','bets', fmtn(r.n_bets), 'mean entry price '+(r.mean_price!=null?r.mean_price.toFixed(2):'—')],
+    ['t-statistic','t', r.t_event!=null?r.t_event.toFixed(2):'—',
+      Math.abs(r.t_event||0)>2.5?'clears |t| > 2.5':'below |t| = 2.5'],
+    ['Events in profit','pos', r.frac_events_positive!=null?(100*r.frac_events_positive).toFixed(0)+'%':'—',
+      'share of its events with positive mean'],
+    ['Conviction','conv', fmtc(r.conviction_c),
+      (r.conviction_c!=null&&r.conviction_c<0)?'bets bigger on worse bets':'bets bigger on better bets'],
+  ];
+  $('tiles').innerHTML = tiles.map(t=>'<div class="tile"><div class="k">'+t[0]+'</div>'+
+    '<div class="v">'+t[2]+'</div><div class="m">'+t[3]+'</div></div>').join('');
+
+  drawDiv('bands', toRows(D.bands[addr]), 'bandtab', {labelw:66,keyname:'price band'});
+  const cats=toRows(D.categories[addr]).slice(0,10);
+  drawDiv('cats', cats, 'cattab', {labelw:104,keyname:'category'});
+  const yrs=toRows(D.years[addr]).sort((a,b)=>a.k.localeCompare(b.k));
+  drawDiv('years', yrs, 'yeartab', {labelw:44,keyname:'year'});
+
+  const kept = (r.drop_best_event_c!=null && r.resid_event_c) ?
+    100*r.drop_best_event_c/r.resid_event_c : null;
+  const flip = r.drop_best_event_c!=null && r.resid_event_c>0 && r.drop_best_event_c<0;
+  const rows=[
+    ['Edge, all events', fmtc(r.resid_event_c), ''],
+    ['Edge, single best event removed', fmtc(r.drop_best_event_c),
+      kept!=null ? kept.toFixed(0)+'% kept'+(flip?' — flips negative':'') : ''],
+    ['Median bet (not the mean)', fmtc(r.median_bet_c), 'the typical bet, immune to outliers'],
+    ['10% trimmed mean', fmtc(r.trimmed_bet_c), 'mean after cutting both tails'],
+    ['Skew of bet outcomes', r.skew_bet!=null?r.skew_bet.toFixed(2):'—',
+      'high skew = the record leans on rare big wins'],
+    ['Top 1% of bets → share of gains', r.top1pct_pos_share!=null?(100*r.top1pct_pos_share).toFixed(0)+'%':'—',''],
+    ['First half of history', fmtc(r.h1_disjoint),
+      fmtn(r.n1_disjoint)+' events, shared ones removed'],
+    ['Second half of history', fmtc(r.h2_disjoint),
+      fmtn(r.n2_disjoint)+' events, shared ones removed'],
+    ['Events straddling the split', fmtn(r.n_shared_events),
+      'dropped from both halves — they would otherwise vote twice'],
+  ];
+  $('robust').innerHTML='<table><tbody>'+rows.map(x=>'<tr><td>'+x[0]+'</td><td>'+x[1]+
+    '</td><td style="color:var(--ink-3);font-size:.75rem">'+x[2]+'</td></tr>').join('')+'</tbody></table>';
+
+  loadMarkets(addr);
+}
+
+// ---------------------------------------------------------------- drill-down
+// Per-bet detail for the whole scored population is 3.27M rows (~129 MB as JSON),
+// so it is fetched one wallet at a time from the local server rather than inlined.
+// Opened as a bare file:// there is no server to ask, and the panel says so
+// instead of silently showing a truncated subset.
+const SERVED = location.protocol === 'http:' || location.protocol === 'https:';
+let MK = null, mkSel = null;
+
+if(!SERVED){
+  $('drillnote').innerHTML =
+    '<p class="note">This panel needs the local server — per-bet detail for all '+
+    fmtn(N)+' wallets is 3.27M rows (~129 MB) and is deliberately <b>not</b> inlined in '+
+    'this file, so nothing here is a silently truncated subset. Start it with '+
+    '<code>.venv/bin/python scripts/serve_forensics.py</code> and open '+
+    '<code>http://127.0.0.1:8765/</code> — same page, plus every market and every bet. '+
+    'It binds to this machine only and never writes anything.</p>';
+}
+
+async function loadMarkets(addr){
+  if(!SERVED) return;
+  $('mkstat').textContent = 'loading…';
+  $('mkfilters').hidden = true; $('mklist').hidden = true; $('betpanel').hidden = true;
+  try{
+    const res = await fetch('/api/wallet/'+addr);
+    const j = await res.json();
+    if(j.error){ $('mkstat').textContent = j.error; MK = null; return; }
+    MK = j; mkSel = null;
+    const T = j.totals;
+    $('mkstat').innerHTML = fmtn(j.n_markets)+' markets · '+fmtn(j.n_bets)+' bets · '+
+      fmtusd(T.stake)+' staked → <b class="'+(T.net>=0?'pos':'neg')+'">'+fmtusd(T.net)+
+      '</b> net <span style="color:var(--ink-3)">('+fmtusd(T.profit)+' gross − '+
+      fmtusd(T.fee)+' fees)</span>';
+    $('mkfilters').hidden = false; $('mklist').hidden = false;
+    renderMarkets();
+    $('curvecard').hidden = false; drawCurve();
+  }catch(e){
+    MK = null;
+    $('mkstat').textContent = 'could not reach the local server';
+  }
+}
+function renderMarkets(){
+  if(!MK) return;
+  const q = $('mksearch').value.trim().toLowerCase();
+  const s = $('mksort').value;
+  // market row: [mc, label, category, bets, won, avgPrice, residC, rawC, stake,
+  //              firstTs, grossProfit$, netProfit$, fee$]
+  let rows = MK.markets.filter(m=>!q || m[1].toLowerCase().includes(q));
+  const cmp = {bets:(a,b)=>b[3]-a[3], edge:(a,b)=>b[6]-a[6], '-edge':(a,b)=>a[6]-b[6],
+               notional:(a,b)=>b[8]-a[8], time:(a,b)=>b[9]-a[9],
+               net:(a,b)=>b[11]-a[11], '-net':(a,b)=>a[11]-b[11]}[s];
+  rows = rows.slice().sort(cmp);
+  $('mkrows').innerHTML = rows.slice(0,300).map(m=>
+    '<div class="mkrow'+(m[0]===mkSel?' sel':'')+'" data-mc="'+m[0]+'" tabindex="0" role="button">'+
+    '<span class="q" title="'+esc(m[1])+'">'+esc(m[1])+'<span class="pill">'+m[2]+'</span></span>'+
+    '<span class="num">'+m[3]+'</span><span class="num">'+m[4]+'</span>'+
+    '<span class="num">'+m[5].toFixed(2)+'</span>'+
+    '<span class="num '+(m[6]>=0?'pos':'neg')+'">'+fmtc(m[6])+'</span>'+
+    '<span class="num '+(m[11]>=0?'pos':'neg')+'">'+fmtusd(m[11])+'</span></div>').join('');
+  $('mkrows').querySelectorAll('.mkrow').forEach(e=>{
+    const go = ()=>showBets(+e.dataset.mc);
+    e.addEventListener('click',go);
+    e.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();go();}});
+  });
+}
+const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// ---------------------------------------------------------------- equity curve
+// A steady slope and a step function are indistinguishable in the year panel and
+// unmistakable here — which is the whole "is this record one lucky event" question.
+let curveMode = 'usd';
+function drawCurve(){
+  if(!MK || !MK.curve) return;
+  const c = MK.curve, svg = $('curve'); svg.innerHTML='';
+  const usd = curveMode === 'usd';
+  const y0 = usd ? c.cum_usd : c.cum_c;
+  if(!y0.length) return;
+  const w=940,h=260,ml=62,mr=14,mt=12,mb=34;
+  svg.setAttribute('viewBox','0 0 '+w+' '+h); svg.setAttribute('width',w); svg.setAttribute('height',h);
+  const t0=c.ts[0], t1=c.ts[c.ts.length-1] || t0+1;
+  const lo=Math.min(0,...y0), hi=Math.max(0,...y0), pad=(hi-lo)*0.08 || 1;
+  const X=t=>ml+(t-t0)/Math.max(t1-t0,1)*(w-ml-mr);
+  const Y=v=>mt+(hi+pad-v)/((hi+pad)-(lo-pad))*(h-mt-mb);
+  for(let i=0;i<=4;i++){
+    const v=lo-pad+i*((hi+pad)-(lo-pad))/4;
+    svg.appendChild(el('line',{x1:ml,x2:w-mr,y1:Y(v),y2:Y(v),class:v===0?'axisline':'gridline'}));
+    svg.appendChild(txt(ml-7,Y(v)+3.5, usd?('$'+Math.round(v).toLocaleString('en-US')):(v.toFixed(0)+'¢'),'glab','end'));
+  }
+  svg.appendChild(el('line',{x1:ml,x2:w-mr,y1:Y(0),y2:Y(0),class:'axisline'}));
+  const years={};
+  c.ts.forEach(t=>{const y=new Date(t*1000).getUTCFullYear(); if(!(y in years))years[y]=t;});
+  Object.entries(years).forEach(([y,t])=>{
+    svg.appendChild(el('line',{x1:X(t),x2:X(t),y1:mt,y2:h-mb,class:'gridline'}));
+    svg.appendChild(txt(X(t),h-mb+15,y,'glab','middle'));
+  });
+  // shade the wallet's single biggest-contributing event
+  const te=c.top_event;
+  if(te && te.t1>=t0){
+    const a=X(Math.max(te.t0,t0)), b=X(Math.min(te.t1,t1));
+    svg.appendChild(el('rect',{x:a,y:mt,width:Math.max(2,b-a),height:h-mt-mb,
+      fill:'var(--s2)','fill-opacity':0.14}));
+  }
+  let dpath='';
+  for(let i=0;i<c.ts.length;i++) dpath += (i?'L':'M')+X(c.ts[i]).toFixed(1)+' '+Y(y0[i]).toFixed(1);
+  svg.appendChild(el('path',{d:dpath,fill:'none',stroke:'var(--s1)','stroke-width':2,
+    'stroke-linejoin':'round'}));
+  const last=y0[y0.length-1];
+  svg.appendChild(el('circle',{cx:X(t1),cy:Y(last),r:4,fill:'var(--s1)',
+    stroke:'var(--surface-1)','stroke-width':2}));
+  svg.appendChild(txt(4,mt+2, usd?'cumulative $ (gross)':'cumulative ¢/share','glab'));
+  // nearest-point hover across the whole plot, so thin lines are not pinpoint targets
+  const hit=el('rect',{x:ml,y:mt,width:w-ml-mr,height:h-mt-mb,fill:'transparent'});
+  hit.style.cursor='crosshair';
+  hit.addEventListener('mousemove',ev=>{
+    const bb=svg.getBoundingClientRect();
+    const px=(ev.clientX-bb.left)*(w/bb.width);
+    const t=t0+(px-ml)/(w-ml-mr)*(t1-t0);
+    let k=0,best=Infinity;
+    for(let i=0;i<c.ts.length;i++){const dd=Math.abs(c.ts[i]-t); if(dd<best){best=dd;k=i;}}
+    showTip(ev,'<b>'+new Date(c.ts[k]*1000).toISOString().slice(0,10)+'</b>'+
+      (usd?('$'+c.cum_usd[k].toLocaleString('en-US')):(c.cum_c[k].toFixed(0)+'¢'))+
+      ' cumulative<br><span>bet '+fmtn(Math.round((k+1)/c.n_points*c.n_bets))+' of '+fmtn(c.n_bets)+'</span>');
+  });
+  hit.addEventListener('mouseleave',hideTip);
+  svg.appendChild(hit);
+  const note = te ? ('Shaded band: <b>'+esc(te.label)+'</b> — the single resolution event '+
+    'contributing most to this wallet’s skill edge ('+fmtc(te.contrib_c)+' across '+te.n+
+    ' bets, '+(100*te.share).toFixed(0)+'% of the cumulative total). If the curve does its '+
+    'climbing inside that band, the record is one event wearing a track record’s clothes.')
+    : '';
+  $('curvenote').innerHTML = note + (c.n_points<c.n_bets ?
+    ' <span style="color:var(--ink-3)">Drawn from '+fmtn(c.n_points)+' of '+fmtn(c.n_bets)+
+    ' bets; every large single-bet move is retained, so no step is smoothed away.</span>' : '');
+}
+if(SERVED){
+  $('curveUsd').addEventListener('click',()=>{curveMode='usd';
+    $('curveUsd').setAttribute('aria-pressed','true'); $('curveC').setAttribute('aria-pressed','false');
+    drawCurve();});
+  $('curveC').addEventListener('click',()=>{curveMode='c';
+    $('curveC').setAttribute('aria-pressed','true'); $('curveUsd').setAttribute('aria-pressed','false');
+    drawCurve();});
+}
+function showBets(mc){
+  if(!MK) return;
+  mkSel = mc; renderMarkets();
+  const m = MK.markets.find(x=>x[0]===mc);
+  const b = MK.bets[String(mc)] || [];
+  $('betpanel').hidden = false;
+  $('bettitle').textContent = m[1];
+  $('betsub').textContent = m[2]+' · '+m[3]+' bets · '+m[4]+' won · '+
+    fmtc(m[6])+' skill edge · '+fmtusd(m[8])+' staked → '+fmtusd(m[11])+' net';
+  // bet row: [ts, price, size, resolvedValue, outcomeName, residC, profit$, fee$, net$]
+  const sum=i=>b.reduce((t,r)=>t+r[i],0);
+  const tStake=b.reduce((t,r)=>t+r[1]*r[2],0);
+  $('bettab').innerHTML =
+    '<table><thead><tr><th>when</th><th>bought</th><th>price</th><th>shares</th>'+
+    '<th>stake</th><th>result</th><th>profit</th><th>fee</th><th>net</th>'+
+    '<th>return</th><th>skill edge</th></tr></thead><tbody>'+
+    b.map(r=>{
+      const stake=r[1]*r[2];
+      return '<tr><td>'+new Date(r[0]*1000).toISOString().slice(0,16).replace('T',' ')+'</td>'+
+      '<td>'+esc(r[4]||'—')+'</td><td>'+(100*r[1]).toFixed(1)+'¢</td>'+
+      '<td>'+fmtn(Math.round(r[2]))+'</td><td>'+fmtusd(stake)+'</td>'+
+      '<td>'+(r[3]>0.5?'won':'lost')+'</td>'+
+      '<td class="'+(r[6]>=0?'pos':'neg')+'">'+fmtusd(r[6])+'</td>'+
+      '<td>'+fmtusd(-r[7])+'</td>'+
+      '<td class="'+(r[8]>=0?'pos':'neg')+'"><b>'+fmtusd(r[8])+'</b></td>'+
+      '<td class="'+(r[8]>=0?'pos':'neg')+'">'+(stake>0?(100*r[8]/stake).toFixed(0)+'%':'—')+'</td>'+
+      '<td class="'+(r[5]>=0?'pos':'neg')+'">'+fmtc(r[5])+'</td></tr>';}).join('')+
+    '</tbody><tfoot><tr><th colspan="4">total ('+b.length+' bets)</th>'+
+    '<th>'+fmtusd(tStake)+'</th><th></th>'+
+    '<th class="'+(sum(6)>=0?'pos':'neg')+'">'+fmtusd(sum(6))+'</th>'+
+    '<th>'+fmtusd(-sum(7))+'</th>'+
+    '<th class="'+(sum(8)>=0?'pos':'neg')+'">'+fmtusd(sum(8))+'</th>'+
+    '<th class="'+(sum(8)>=0?'pos':'neg')+'">'+(tStake>0?(100*sum(8)/tStake).toFixed(0)+'%':'—')+'</th>'+
+    '<th></th></tr></tfoot></table>'+
+    '<p class="note"><b>profit</b> = shares × (outcome − price): a share pays $1 if the '+
+    'outcome happens and $0 if not, so 50 shares at 36¢ returns +$32 on a win and −$18 on '+
+    'a loss. <b>fee</b> is the taker rate k·p·(1−p) per share, charged win or lose '+
+    '(k = 0.05 sports, 0.04 politics/finance/tech, 0.07 crypto). <b>net</b> is what you '+
+    'keep, and <b>return</b> is net over stake. <b>Skill edge</b> is a different question — '+
+    'outcome minus what the market’s own calibration curve expected at that price — so a '+
+    'win at 5¢ scores far more than a win at 95¢. A wallet can be up money and have '+
+    'negative skill edge: that just means it bought favourites.</p>';
+}
+if(SERVED){
+  $('mksearch').addEventListener('input',renderMarkets);
+  $('mksort').addEventListener('change',renderMarkets);
+}
+
+// ---------------------------------------------------------------- list
+function renderList(){
+  const q=$('search').value.trim().toLowerCase();
+  const s=$('sort').value, desc=!s.startsWith('-'), key=desc?s:s.slice(1);
+  let rows=recs.filter(r=>!q||r.wallet.toLowerCase().includes(q));
+  rows.sort((a,b)=>{
+    const x=a[key], y=b[key];
+    if(x==null) return 1; if(y==null) return -1;
+    return desc? y-x : x-y;
+  });
+  $('listcount').textContent=fmtn(rows.length)+' wallets'+(rows.length>150?' · showing first 150':'');
+  $('wrows').innerHTML=rows.slice(0,150).map(r=>
+    '<div class="wrow'+(r.wallet===selected?' sel':'')+'" data-w="'+r.wallet+'" tabindex="0" role="button">'+
+    '<span class="addr">'+short(r.wallet)+'</span>'+
+    '<span class="num">'+fmtc(r.resid_event_c)+'</span>'+
+    '<span class="num">'+(r.eff_events!=null?r.eff_events.toFixed(0):'—')+'</span>'+
+    '<span class="num">'+fmtn(r.n_bets)+'</span></div>').join('');
+  $('wrows').querySelectorAll('.wrow').forEach(e=>{
+    e.addEventListener('click',()=>select(e.dataset.w));
+    e.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();select(e.dataset.w);}});
+  });
+}
+$('search').addEventListener('input',renderList);
+$('sort').addEventListener('change',renderList);
+$('rand').addEventListener('click',()=>{
+  const r=recs[Math.floor(Math.random()*recs.length)];
+  $('search').value=''; renderList(); select(r.wallet);
+  $('wlist').scrollTop=0;
+});
+
+// ---------------------------------------------------------------- method
+$('method').innerHTML =
+ '<p><b>What "edge" means here.</b> Not profit and not win rate. For every bet, the market\'s own '+
+ 'calibration curve says how often something priced at that level actually happens; the wallet\'s edge '+
+ 'is how far its outcome beat that. Buying at 10¢ and winning scores about +87¢; buying at 80¢ and '+
+ 'losing scores about −78¢. So a 40¢ win and an 80¢ loss do not cancel — each is weighted by how '+
+ 'surprising it was. Betting favourites, which flatters win rate, earns nothing here by construction.</p>'+
+ '<p><b>Events, not bets.</b> Buying one team across six correlated markets is one piece of information, '+
+ 'not six. Every average and every confidence interval on this page is computed over resolution events, '+
+ 'and the sample size shown is Kish effective events, which discounts a wallet whose record piles into a '+
+ 'few outcomes. This is the single biggest reason numbers here are smaller than a naive read of the same tape.</p>'+
+ '<p><b>What this page cannot tell you.</b> It is descriptive, computed on history that has already '+
+ 'resolved. A wallet looking sharp here is a hypothesis, not a recommendation — the second-half column '+
+ 'above shows how much of a first-half record typically survives, and the answer is "most of it '+
+ 'evaporates." Nothing here accounts for what it would cost to act on any of it. Several '+
+ 'panels are per-wallet cuts of records too thin to support a per-wallet claim; that is deliberate, and '+
+ 'the effective-event count beside each one is how you tell.</p>'+
+ '<p class="note">Universe: resolved BUY bets in real-world (non micro-crypto) markets from the '+
+ 'performance-blind deepened sample. Baseline: E[outcome | entry price] over 20 quantile bins fit on the '+
+ 'whole universe — verified insensitive to bin count (finding 1). Null seeds and permutation counts are '+
+ 'in <code>data/interim/forensics/</code>. Built by <code>scripts/wallet_forensics.py</code> and '+
+ '<code>scripts/forensics_checks.py</code>.</p>';
+
+// ---------------------------------------------------------------- boot
+drawQuint(); renderFindings(); drawScatter(); renderList();
+select(recs[0].wallet);
+window.addEventListener('scroll',hideTip,{passive:true});
+})();
+</script>

@@ -1,0 +1,15 @@
+# First type:  /effort high
+# Then enable auto-accept (Shift+Tab in most builds) when it first asks.
+# Leave model on default Sonnet 5. Then paste everything below:
+
+/goal Build this repo to completion autonomously. Read CLAUDE.md and SETUP.md in full first — they are the spec. Implement the pipeline in order: ingest -> features -> validate -> rank -> report, with a passing test in tests/ for every metric. Work in a self-correcting loop: after each module, run the test suite; if tests fail, diagnose and fix; do NOT advance to the next module until the current one's tests pass. Commit after each green stage.
+
+Definition of done: ./run.sh runs end-to-end with no errors and writes a ranked wallet table to data/processed/, all tests pass, and report.py prints a readable summary of the top wallets with their metrics. Loop until this is met.
+
+Work autonomously under these rules:
+- Do NOT stop to ask me for confirmation between stages. Use your judgment and keep going until done or genuinely blocked.
+- ONE hard gate: right after implementing ingest, sanity-check the pulled data against a real, known resolved Polymarket market (verify the outcome, a plausible price, and a timestamp). If the data source errors, returns nothing, or the sample is clearly wrong, STOP and report it instead of building on bad data.
+- Where the spec leaves a modeling choice open (especially how to define "fair value at entry" for the copy-window metric), pick a reasonable, clearly documented default, record it with your reasoning in a new DECISIONS.md, and proceed. Do not block on it.
+- Include EVERY wallet. Never drop, down-weight, or down-rank any wallet. The authenticity/pattern flags are metadata-only columns exactly as CLAUDE.md specifies — they must not affect score or rank.
+- Give the edge/fair-value math and the out-of-sample validation extra care; they are the parts most likely to be subtly wrong.
+- When finished, print: what you built, the default modeling choices you made, how many wallets and markets were processed, and the top 10 wallets with their metrics.
